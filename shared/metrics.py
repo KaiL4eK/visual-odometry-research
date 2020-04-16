@@ -74,16 +74,16 @@ def calc_sequence_errors(poses_gt, poses_result):
                 continue
 
             pose_delta_gt = np.dot(
-                                np.linalg.inv(poses_gt[first_frame_idx]),
-                                poses_gt[last_frame_idx]
+                                poses_gt[last_frame_idx],
+                                np.linalg.inv(poses_gt[first_frame_idx])
                                 )
             pose_delta_result = np.dot(
-                                    np.linalg.inv(poses_result[first_frame_idx]),
-                                    poses_result[last_frame_idx]
+                                    poses_result[last_frame_idx],
+                                    np.linalg.inv(poses_result[first_frame_idx])
                                     )
             pose_error = np.dot(
-                            np.linalg.inv(pose_delta_result),
-                            pose_delta_gt
+                            pose_delta_gt,
+                            np.linalg.inv(pose_delta_result)
                             )
 
             r_err = rotation_error(pose_error)
