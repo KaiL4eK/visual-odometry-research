@@ -1,3 +1,5 @@
 opencv-python-headless==4.2.0.34
 pytransform3d==1.1.1
 pprint==0.1
+torch==1.4.0
+torchvision==0.5.0
