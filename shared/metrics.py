@@ -17,6 +17,11 @@ def translation_error(pose_error):
 
 
 def compute_ATE(gt, pred):
+    if isinstance(gt,list):
+        gt = np.array(gt)
+    if isinstance(pred,list):
+        pred = np.array(pred)
+    
     errs = gt[:, :3, 3] - pred[:, :3, 3]
     magns = np.linalg.norm(errs, axis=1)
     # TODO - sqrt and **2 required??
@@ -25,6 +30,11 @@ def compute_ATE(gt, pred):
 
 
 def compute_RPE(gt, pred):
+    if isinstance(gt,list):
+        gt = np.array(gt)
+    if isinstance(pred,list):
+        pred = np.array(pred)
+    
     trans_errors = []
     rot_errors = []
     for i in range(len(gt))[:-1]:
