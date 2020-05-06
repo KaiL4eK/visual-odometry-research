@@ -186,12 +186,9 @@ class KITTIData(object):
         return c_img, n_img, gt_quat_t_ar, gt_trans
     
     
-def VisualOdometry(object):
+class VisualOdometry():
     def __init__(self):
-        pass
-    
-    def process_depth(self, l_img, r_img, Q):
-        left_matcher = cv2.StereoSGBM_create(
+        self.left_matcher = cv2.StereoSGBM_create(
             minDisparity=0,
             numDisparities=16*9, 
             blockSize=15,
@@ -203,20 +200,37 @@ def VisualOdometry(object):
             speckleWindowSize=200,
             speckleRange=8
         )
-
+    
+    def process_depth(self, l_img, r_img, Q):
         l_img_gray = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
         r_img_gray = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
 
-        l_disp = left_matcher.compute(l_img_gray, r_img_gray)        
+        l_disp = self.left_matcher.compute(l_img_gray, r_img_gray)        
         disp = l_disp.astype(np.float32) / 16.0
     
-        depth = cv2.reprojectImageTo3D(disp, Q)
+        depth_frame = cv2.reprojectImageTo3D(disp, Q)
+        return depth_frame
+    
+    def get_features(self, c_img, n_img):
+        feature_params = dict(maxCorners=150,
+                              qualityLevel=0.3,
+                              minDistance=7,
+                              blockSize=7)
+        lk_params = dict(winSize=(15, 15),
+                         maxLevel=2,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
-#         idxs = (disp > 0) & (points[:,:,2] < 100)
-#         points = points[idxs]
-#         colors = l_img[idxs]
-        
-        return depth
+        c_img_gray = cv2.cvtColor(c_img, cv2.COLOR_RGB2GRAY)
+        n_img_gray = cv2.cvtColor(n_img, cv2.COLOR_RGB2GRAY)
+
+        c_feat_corners = cv2.goodFeaturesToTrack(c_img_gray, mask=None, **feature_params)
+        n_feat_corners, st, err = cv2.calcOpticalFlowPyrLK(c_img_gray, n_img_gray, c_feat_corners, None, **lk_params)
+
+        c_feat_corners = c_feat_corners[st==1]
+        n_feat_corners = n_feat_corners[st==1]
+
+        return c_feat_corners.astype(int), n_feat_corners.astype(int)
+    
     
 def draw_matches(img1, kp1, img2, kp2, matches, color=None): 
     """Draws lines between matching keypoints of two images.  
@@ -267,3 +281,12 @@ def draw_matches(img1, kp1, img2, kp2, matches, color=None):
     
     return new_img
     
+    
+def draw_keypoints(c_img, n_img, c_feats, n_feats, radius=5, color=(20, 255, 20)):
+
+    for p in c_feats:
+        cv2.circle(c_img, tuple(p), radius, color, 2)
+
+    for p in n_feats:
+        cv2.circle(n_img, tuple(p), radius, color, 2)
+
