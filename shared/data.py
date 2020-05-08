@@ -19,6 +19,9 @@ class KITTIData(object):
         
         self._load_calib(CALIB_PATH)
         
+        print('Projections:')
+        for name, intr in self.projections.items():
+            print(f'{name}:\n{intr}')
         print('Intrinsics:')
         for name, intr in self.intricsics.items():
             print(f'{name}:\n{intr}')
@@ -76,13 +79,18 @@ class KITTIData(object):
                 calib_data = np.fromstring(info, sep=' ')
                 filedata[name] = calib_data.reshape(3, 4)
 
+        self.projections = {}
+        self.projections['P0'] = filedata['P0']
+        self.projections['P1'] = filedata['P1']
+        self.projections['P2'] = filedata['P2']
+        self.projections['P3'] = filedata['P3']
+         
         self.intricsics = {}
         self.intricsics['K_cam0'] = filedata['P0'][0:3, 0:3]
         self.intricsics['K_cam1'] = filedata['P1'][0:3, 0:3]
         self.intricsics['K_cam2'] = filedata['P2'][0:3, 0:3]
         self.intricsics['K_cam3'] = filedata['P3'][0:3, 0:3]
         
-
         self.cam0_extrinsics = {}
         self.cam0_extrinsics['T1'] = np.eye(4)
         self.cam0_extrinsics['T1'][0, 3] = filedata['P1'][0,3] / filedata['P1'][0,0]
@@ -99,11 +107,14 @@ class KITTIData(object):
         self.velo_extrinsics['T3'] = self.cam0_extrinsics['T3'].dot(self.velo_extrinsics['T0'])        
             
         p_cam = np.array([0, 0, 0, 1])
+        p_velo0 = np.linalg.inv(self.velo_extrinsics['T0']).dot(p_cam)
+        p_velo1 = np.linalg.inv(self.velo_extrinsics['T1']).dot(p_cam)
         p_velo2 = np.linalg.inv(self.velo_extrinsics['T2']).dot(p_cam)
         p_velo3 = np.linalg.inv(self.velo_extrinsics['T3']).dot(p_cam)
 
         self.baselines = {}
         self.baselines['rgb'] = np.linalg.norm(p_velo3 - p_velo2)
+        self.baselines['gray'] = np.linalg.norm(p_velo1 - p_velo0)
         
     def __len__(self):
         return len(self.poses)-1
@@ -133,9 +144,12 @@ class KITTIData(object):
             'fy': mtrx[1,1]
         }
     
+    def get_color_P_matrix(self):
+        return self.intricsics['K_cam2'], self.intricsics['K_cam3']
+    
     def get_color_intrinsics_dicts(self):
-        left = _intrinsics_dict(self.intricsics['K_cam2'])
-        right = _intrinsics_dict(self.intricsics['K_cam3'])
+        left = self._intrinsics_dict(self.intricsics['K_cam2'])
+        right = self._intrinsics_dict(self.intricsics['K_cam3'])
         return left, right
     
     def get_color_left_Q_matrix(self):
