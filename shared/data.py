@@ -35,6 +35,9 @@ class KITTIData(object):
 #         print(self.baselines)
 
         
+        self.LEFT_GRAY_IMAGES_DIR = os.path.join(SEQUENCE_DIR, 'image_0')
+        self.RIGHT_GRAY_IMAGES_DIR = os.path.join(SEQUENCE_DIR, 'image_1')
+    
         self.LEFT_IMAGES_DIR = os.path.join(SEQUENCE_DIR, 'image_2')
         self.RIGHT_IMAGES_DIR = os.path.join(SEQUENCE_DIR, 'image_3')
 
@@ -176,22 +179,30 @@ class KITTIData(object):
             'fy': mtrx[1,1]
         }
     
-    def get_color_С_matrix(self):
-        return self.intricsics['K_cam2'], self.intricsics['K_cam3']
+    def get_С_matrix(self, color=False):
+        if color:
+            return self.intricsics['K_cam2'], self.intricsics['K_cam3']
+        else:
+            return self.intricsics['K_cam0'], self.intricsics['K_cam1']
     
-    def get_color_P_matrix(self):
-        return self.projections['P2'], self.projections['P3']
-    
-    def get_color_intrinsics_dicts(self):
-        left = self._intrinsics_dict(self.intricsics['K_cam2'])
-        right = self._intrinsics_dict(self.intricsics['K_cam3'])
+    def get_intrinsics_dicts(self, color=False):
+        if color:
+            left = self._intrinsics_dict(self.intricsics['K_cam2'])
+            right = self._intrinsics_dict(self.intricsics['K_cam3'])
+        else:
+            left = self._intrinsics_dict(self.intricsics['K_cam0'])
+            right = self._intrinsics_dict(self.intricsics['K_cam1'])
         return left, right
         
-    def get_color_left_Q_matrix(self):
-        # Left
-        intr = self._intrinsics_dict(self.intricsics['K_cam2'])
-        # NOTE - Negative baseline, projecting right to left
-        baseline = -self.baselines['rgb']
+    def get_left_Q_matrix(self, color=False):
+        if color:
+            intr = self._intrinsics_dict(self.intricsics['K_cam2'])
+            # NOTE - Negative baseline, projecting right to left
+            baseline = -self.baselines['rgb']
+        else:
+            intr = self._intrinsics_dict(self.intricsics['K_cam0'])
+            # NOTE - Negative baseline, projecting right to left
+            baseline = -self.baselines['gray']
         
         Q = np.array([
             [1, 0, 0, -intr['cx']],
@@ -202,26 +213,23 @@ class KITTIData(object):
         
         return Q
 
-    def get_color_images(self, idx):
+    def get_images(self, idx, color=False):
         fname = self._get_image_fname(idx)
-        left_img_fpath = os.path.join(self.LEFT_IMAGES_DIR, fname)
-        right_img_fpath = os.path.join(self.RIGHT_IMAGES_DIR, fname)
-        l_img = cv2.imread(left_img_fpath)
-        l_img = cv2.cvtColor(l_img, cv2.COLOR_BGR2RGB)
-        r_img = cv2.imread(right_img_fpath)
-        r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
+        if color:
+            fname = self._get_image_fname(idx)
+            left_img_fpath = os.path.join(self.LEFT_IMAGES_DIR, fname)
+            right_img_fpath = os.path.join(self.RIGHT_IMAGES_DIR, fname)
+            l_img = cv2.imread(left_img_fpath)
+            l_img = cv2.cvtColor(l_img, cv2.COLOR_BGR2RGB)
+            r_img = cv2.imread(right_img_fpath)
+            r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
+        else:
+            left_img_fpath = os.path.join(self.LEFT_GRAY_IMAGES_DIR, fname)
+            right_img_fpath = os.path.join(self.RIGHT_GRAY_IMAGES_DIR, fname)
+            l_img = cv2.imread(left_img_fpath, cv2.IMREAD_GRAYSCALE)
+            r_img = cv2.imread(right_img_fpath, cv2.IMREAD_GRAYSCALE)
         return l_img, r_img
-    
-    def get_color_images(self, idx):
-        fname = self._get_image_fname(idx)
-        left_img_fpath = os.path.join(self.LEFT_IMAGES_DIR, fname)
-        right_img_fpath = os.path.join(self.RIGHT_IMAGES_DIR, fname)
-        l_img = cv2.imread(left_img_fpath)
-        l_img = cv2.cvtColor(l_img, cv2.COLOR_BGR2RGB)
-        r_img = cv2.imread(right_img_fpath)
-        r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
-        return l_img, r_img
-        
+            
     def __getitem__(self, idx):
         c_idx = idx
         n_idx = idx+1
@@ -284,6 +292,11 @@ class VisualOdometry():
         pnts2d = pnts2d.T
         pnts2d /= pnts2d[:,2:3] # To keep array
         pnts2d = pnts2d[:,:2].astype(int)
+        
+        for p in np.hstack((pnts3d, pnts2d)):
+            if np.abs(p[-1]) > 10000:
+                print(p)
+        
         return pnts2d
     
     def reproject_2d_to_3d_points(self, feats, depth_frame):
@@ -294,7 +307,7 @@ class VisualOdometry():
             points.append(pnt)
 
         points = np.array(points)    
-        ft_idxs = (points[:,2] > 0)
+        ft_idxs = (points[:,2] > 0) & np.any(np.isfinite(points), axis=1)
 
         # All points, valid idxs
         return points, ft_idxs
@@ -307,10 +320,11 @@ class VisualOdometry():
         return pred_pnts_3d
     
     def process_depth(self, l_img, r_img, Q):
-        l_img_gray = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
-        r_img_gray = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
+        if len(l_img.shape) == 3 and l_img.shape[2] > 1:
+            l_img = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
+            r_img = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
 
-        l_disp = self.left_matcher.compute(l_img_gray, r_img_gray)        
+        l_disp = self.left_matcher.compute(l_img, r_img)        
         disp = l_disp.astype(np.float32) / 16.0
     
         depth_frame = cv2.reprojectImageTo3D(disp, Q)
@@ -343,6 +357,22 @@ class VisualOdometry():
         
         idxs = list(_clique)    
         return idxs, dist_thrs
+    
+    def _get_features_FAST(self, img):
+        fe = cv2.FastFeatureDetector_create()
+        feats = fe.detect(img)
+        if len(feats) == 0:
+            return None
+        
+        feats = [f.pt for f in feats]
+        feats = np.array(feats)
+        
+        x_idxs = (feats[:,0] > 0) & (feats[:,0] < img.shape[1])
+        y_idxs = (feats[:,1] > 0) & (feats[:,1] < img.shape[0])
+        idxs = x_idxs & y_idxs
+        
+        feats = feats[idxs].astype(np.float32)
+        return feats
     
     def _get_features_harris(self, img):
         feature_params = dict(maxCorners=20,
@@ -378,6 +408,7 @@ class VisualOdometry():
         for y in range(offset[0], img_sz[0], tile_sz[0]):
             for x in range(offset[1], img_sz[1], tile_sz[1]):
                 feats = self._get_features_harris(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+#                 feats = self._get_features_FAST(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
                 if feats is None:
                     continue
                 
@@ -414,6 +445,16 @@ class VisualOdometry():
         transform[:3,:3] = cv2.Rodrigues(rvec)[0]
         transform[:3, 3] = tvec[:,0]
         return transform
+    
+    def _get_transform_PnPRansac(self, c_pnts3d, n_pnts3d, C_mat):
+        c_pnts2d, _ = cv2.projectPoints(c_pnts3d, np.zeros(3), np.zeros(3), C_mat, distCoeffs=None)
+        retval, rvec, tvec, inliers = cv2.solvePnPRansac(n_pnts3d, c_pnts2d, cameraMatrix=C_mat, distCoeffs=None)
+        # Inliers - indices
+        
+        transform = np.eye(4)
+        transform[:3,:3] = cv2.Rodrigues(rvec)[0]
+        transform[:3, 3] = tvec[:,0]
+        return transform
         
     def _get_transform_LM(self, c_pnts3d, n_pnts3d, C_mat):
         initial = np.zeros(6)
@@ -430,9 +471,12 @@ class VisualOdometry():
         return transform
 
     def get_transform(self, c_pnts3d, n_pnts3d, C_mat, type_='PnP'):
-        if type_ == 'PnP':
-            return self._get_transform_PnP(c_pnts3d, n_pnts3d, C_mat)
-    
+        types = {
+            'PnP': self._get_transform_PnP,
+            'PnPRansac': self._get_transform_PnPRansac
+        }
+        return types[type_](c_pnts3d, n_pnts3d, C_mat)
+        
     @staticmethod
     def estimate_transform_2d(x, c_pnts_2d, n_pnts_2d, c_pnts_3d, n_pnts_3d, P_mtrx):
         """
@@ -523,7 +567,7 @@ def draw_keypoints(c_img, n_img, c_feats, n_feats, radius=5, color=(20, 255, 20)
 
     for p in c_feats:
         cv2.circle(c_img, tuple(p), radius, color, 2)
-
+    
     for p in n_feats:
         cv2.circle(n_img, tuple(p), radius, color, 2)
 

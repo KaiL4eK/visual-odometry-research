@@ -39,17 +39,11 @@ def plot_trajectory(poses):
 #     ax = plt.gca()
 #     ax.set_aspect('equal')
 
-    pos_xz = []
-    for pose in poses:
-        pos_xz.append([pose[0, 3],  pose[2, 3]])
-    pos_xz = np.asarray(pos_xz)
-    plt.plot(pos_xz[:, 0],  pos_xz[:, 1])
-
+    plt.plot(poses[:,0,3],  poses[:,2,3])
     plt.xticks(fontsize=fontsize_)
     plt.yticks(fontsize=fontsize_)
     plt.xlabel('x (m)', fontsize=fontsize_)
     plt.ylabel('z (m)', fontsize=fontsize_)
     plt.grid()
     plt.show()
-    
     
