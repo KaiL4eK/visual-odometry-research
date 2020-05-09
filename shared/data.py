@@ -19,20 +19,20 @@ class KITTIData(object):
         
         self._load_calib(CALIB_PATH)
         
-        print('Projections:')
-        for name, intr in self.projections.items():
-            print(f'{name}:\n{intr}')
-        print('Intrinsics:')
-        for name, intr in self.intricsics.items():
-            print(f'{name}:\n{intr}')
-        print('Extrinsics to cam0:')
-        for name, extr in self.cam0_extrinsics.items():
-            print(f'{name}:\n{extr}')
-        print('Extrinsics to velo:')
-        for name, extr in self.velo_extrinsics.items():
-            print(f'{name}:\n{extr}')
-        print('Baselines:')
-        print(self.baselines)
+#         print('Projections:')
+#         for name, intr in self.projections.items():
+#             print(f'{name}:\n{intr}')
+#         print('Intrinsics:')
+#         for name, intr in self.intricsics.items():
+#             print(f'{name}:\n{intr}')
+#         print('Extrinsics to cam0:')
+#         for name, extr in self.cam0_extrinsics.items():
+#             print(f'{name}:\n{extr}')
+#         print('Extrinsics to velo:')
+#         for name, extr in self.velo_extrinsics.items():
+#             print(f'{name}:\n{extr}')
+#         print('Baselines:')
+#         print(self.baselines)
 
         
         self.LEFT_IMAGES_DIR = os.path.join(SEQUENCE_DIR, 'image_2')
@@ -116,6 +116,9 @@ class KITTIData(object):
         self.baselines['rgb'] = np.linalg.norm(p_velo3 - p_velo2)
         self.baselines['gray'] = np.linalg.norm(p_velo1 - p_velo0)
         
+    def get_poses(self):
+        return self.poses
+        
     def __len__(self):
         return len(self.poses)-1
 
@@ -156,6 +159,15 @@ class KITTIData(object):
 
         return transform
     
+    def get_poses_transform(self, idx):
+        c_idx = idx
+        n_idx = idx+1
+        
+        c_pose = self.poses[c_idx]
+        n_pose = self.poses[n_idx]
+
+        return n_pose @ np.linalg.inv(c_pose)
+
     def _intrinsics_dict(self, mtrx):
         return {
             'cx': mtrx[0,2],
@@ -235,7 +247,8 @@ class KITTIData(object):
 
 import networkx as nx
 from networkx.algorithms.approximation.clique import max_clique
-
+from scipy.spatial.transform import Rotation as R
+from scipy.optimize import least_squares
     
     
 class VisualOdometry():
@@ -252,6 +265,14 @@ class VisualOdometry():
             speckleWindowSize=200,
             speckleRange=8
         )
+
+    def get_next_pose(self, local_transform, c_pose):
+        n_pose = np.eye(4)
+        quat_t = quat.from_rotation_matrix(local_transform[:3,:3])
+        quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
+        n_pose[:3, :3] = quat.as_rotation_matrix(quat_c * quat_t)
+        n_pose[:, 3] = c_pose @ local_transform[:,3]
+        return n_pose
     
     def reproject_3d_to_2d(self, pnts3d, P):
         # shape = [n_points x 3]
@@ -267,6 +288,7 @@ class VisualOdometry():
     
     def reproject_2d_to_3d_points(self, feats, depth_frame):
         points = []
+        feats = np.around(feats).astype(int)
         for ft in feats:
             pnt = depth_frame[ft[1], ft[0]]
             points.append(pnt)
@@ -322,31 +344,129 @@ class VisualOdometry():
         idxs = list(_clique)    
         return idxs, dist_thrs
     
-    def get_features(self, c_img, n_img):
-        feature_params = dict(maxCorners=150,
+    def _get_features_harris(self, img):
+        feature_params = dict(maxCorners=20,
                               qualityLevel=0.3,
                               minDistance=7,
-                              blockSize=7)
+                              blockSize=3)
+        
+        feats = cv2.goodFeaturesToTrack(img, mask=None, **feature_params)
+        if feats is None:
+            return None
+        
+        x_idxs = (feats[:,:,0] > 0) & (feats[:,:,0] < img.shape[1])
+        y_idxs = (feats[:,:,1] > 0) & (feats[:,:,1] < img.shape[0])
+        idxs = x_idxs & y_idxs
+        
+        feats = feats[idxs].astype(np.float32)
+        return feats
+        
+    def get_features(self, c_img, n_img):
+        img_sz = c_img.shape[:2]
+        tile_sz = np.array([100, 100])
+        
+        rate_sz = img_sz // tile_sz
+        
+        offset = (img_sz - rate_sz * tile_sz)/2
+        offset = offset.astype(int)
+       
+        if len(c_img.shape) == 3 and c_img.shape[2] > 1:
+            c_img = cv2.cvtColor(c_img, cv2.COLOR_RGB2GRAY)
+            n_img = cv2.cvtColor(n_img, cv2.COLOR_RGB2GRAY)
+        
+        c_feats = []
+        for y in range(offset[0], img_sz[0], tile_sz[0]):
+            for x in range(offset[1], img_sz[1], tile_sz[1]):
+                feats = self._get_features_harris(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                if feats is None:
+                    continue
+                
+                feats += np.array([x, y])
+                c_feats.extend([f for f in feats])
+        
+        c_feats = np.array(c_feats)
+        
         lk_params = dict(winSize=(15, 15),
                          maxLevel=2,
                          criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
-        c_img_gray = cv2.cvtColor(c_img, cv2.COLOR_RGB2GRAY)
-        n_img_gray = cv2.cvtColor(n_img, cv2.COLOR_RGB2GRAY)
-
-        c_feats = cv2.goodFeaturesToTrack(c_img_gray, mask=None, **feature_params)
-        n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img_gray, n_img_gray, c_feats, None, **lk_params)
+        n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img, n_img, c_feats, None, **lk_params)
+        n_feats[:,0] = np.clip(n_feats[:,0], 0, img_sz[1]-1)
+        n_feats[:,1] = np.clip(n_feats[:,1], 0, img_sz[0]-1)
         
-        c_x_idxs = (c_feats[:,:,0] > 0) & (c_feats[:,:,0] < c_img.shape[1])
-        c_y_idxs = (c_feats[:,:,1] > 0) & (c_feats[:,:,1] < c_img.shape[0])
-        n_x_idxs = (n_feats[:,:,0] > 0) & (n_feats[:,:,0] < n_img.shape[1])
-        n_y_idxs = (n_feats[:,:,1] > 0) & (n_feats[:,:,1] < n_img.shape[0])
-        idxs = st==1 & c_x_idxs & c_y_idxs & n_x_idxs & n_y_idxs
-        
+        idxs = (st==1).flatten()
         c_feats = c_feats[idxs]
         n_feats = n_feats[idxs]
 
-        return c_feats.astype(int), n_feats.astype(int)
+        return c_feats.astype(np.float32), n_feats.astype(np.float32)
+    
+    def rot_transform_matrix(x):
+        transform = np.eye(4)
+        transform[:3,:3] = R.from_rotvec(x[:3]).as_matrix()
+        transform[:3, 3] = x[3:]
+        return transform
+    
+    def _get_transform_PnP(self, c_pnts3d, n_pnts3d, C_mat):
+        c_pnts2d, _ = cv2.projectPoints(c_pnts3d, np.zeros(3), np.zeros(3), C_mat, distCoeffs=None)
+        retval, rvec, tvec = cv2.solvePnP(n_pnts3d, c_pnts2d, cameraMatrix=C_mat, distCoeffs=None, flags=cv2.SOLVEPNP_ITERATIVE)
+        
+        transform = np.eye(4)
+        transform[:3,:3] = cv2.Rodrigues(rvec)[0]
+        transform[:3, 3] = tvec[:,0]
+        return transform
+        
+    def _get_transform_LM(self, c_pnts3d, n_pnts3d, C_mat):
+        initial = np.zeros(6)
+        args = (
+            c_pnts_3d,
+            n_pnts_3d
+        )
+        optRes = least_squares(self.estimate_transform_3d, initial, method='lm', max_nfev=10000, args=args, verbose=2)
+        x = optRes.x
+        
+        transform = np.eye(4)
+        transform[:3,:3] = R.from_rotvec(x[:3]).as_matrix()
+        transform[:3, 3] = x[3:]
+        return transform
+
+    def get_transform(self, c_pnts3d, n_pnts3d, C_mat, type_='PnP'):
+        if type_ == 'PnP':
+            return self._get_transform_PnP(c_pnts3d, n_pnts3d, C_mat)
+    
+    @staticmethod
+    def estimate_transform_2d(x, c_pnts_2d, n_pnts_2d, c_pnts_3d, n_pnts_3d, P_mtrx):
+        """
+            x - [rotvec, transform]
+        """
+        transform = get_transform_matrix(x)
+
+        Proj_frwrd = P_mtrx @ np.linalg.inv(transform)
+        Proj_bcwrd = P_mtrx @ transform
+
+        n_pred_pnts_2d = vo.reproject_3d_to_2d(c_pnts_3d, Proj_frwrd)
+        c_pred_pnts_2d = vo.reproject_3d_to_2d(n_pnts_3d, Proj_bcwrd)
+
+        c_err = c_pnts_2d - c_pred_pnts_2d
+        n_err = n_pnts_2d - n_pred_pnts_2d
+
+        residual = np.vstack((c_err*c_err,n_err*n_err))
+        return residual.flatten()
+
+    @staticmethod
+    def estimate_transform_3d(x, c_pnts_3d, n_pnts_3d):
+        """
+            x - [rotvec, transform]
+        """
+        transform = get_transform_matrix(x)
+
+        c_pred_pnts_3d = vo.transform_3d(transform, n_pnts_3d)
+        n_pred_pnts_3d = vo.transform_3d(np.linalg.inv(transform), c_pnts_3d)
+
+        c_err = np.linalg.norm(c_pnts_3d - c_pred_pnts_3d, axis=1)
+        n_err = np.linalg.norm(n_pnts_3d - n_pred_pnts_3d, axis=1)
+
+        residual = np.vstack((c_err,n_err))
+        return residual.flatten()
     
     
 def draw_matches(img1, kp1, img2, kp2, matches, color=None): 
