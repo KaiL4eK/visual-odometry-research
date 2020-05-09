@@ -232,6 +232,10 @@ class KITTIData(object):
         n_img = cv2.cvtColor(n_img, cv2.COLOR_BGR2RGB)
         gt_quat_t_ar, gt_trans = self._get_transform(idx)
         return c_img, n_img, gt_quat_t_ar, gt_trans
+
+import networkx as nx
+from networkx.algorithms.approximation.clique import max_clique
+
     
     
 class VisualOdometry():
@@ -255,8 +259,8 @@ class VisualOdometry():
         pnts3d_hmgns = np.ones((pnts3d.shape[0], pnts3d.shape[1]+1))
         pnts3d_hmgns[:,:3] = pnts3d
         
-        pnts2d = P @ np.transpose(pnts3d_hmgns)
-        pnts2d = np.transpose(pnts2d)
+        pnts2d = P @ pnts3d_hmgns.T
+        pnts2d = pnts2d.T
         pnts2d /= pnts2d[:,2:3] # To keep array
         pnts2d = pnts2d[:,:2].astype(int)
         return pnts2d
@@ -276,8 +280,8 @@ class VisualOdometry():
     def transform_3d(self, T, pnts3d):
         pnts3d_hmgns = np.ones((pnts3d.shape[0], pnts3d.shape[1]+1))
         pnts3d_hmgns[:,:3] = pnts3d
-        pred_pnts_3d = T @ pnts3d_hmgns.transpose()
-        pred_pnts_3d = pred_pnts_3d.transpose()[:,:3]
+        pred_pnts_3d = T @ pnts3d_hmgns.T
+        pred_pnts_3d = pred_pnts_3d.T[:,:3]
         return pred_pnts_3d
     
     def process_depth(self, l_img, r_img, Q):
@@ -289,6 +293,34 @@ class VisualOdometry():
     
         depth_frame = cv2.reprojectImageTo3D(disp, Q)
         return depth_frame
+    
+    def max_clique_filter(self, c_pnts, n_pnts, dist_thrs=0.05, min_points=6):
+        num_points = c_pnts.shape[0]
+        graph = nx.Graph()
+        graph.add_nodes_from(list(range(num_points)))
+
+        if c_pnts.shape[0] < min_points:
+            raise Exception('Too low count of points')
+
+        clique_len = 0
+        while clique_len < min_points:
+            for i in range(num_points):
+                diff_1 = c_pnts[i,:] - c_pnts
+                diff_2 = n_pnts[i,:] - n_pnts
+                dist_1 = np.linalg.norm(diff_1, axis=1)
+                dist_2 = np.linalg.norm(diff_2, axis=1)
+                diff = np.abs(dist_2 - dist_1)
+                wIdx = np.where(diff < dist_thrs)
+                for i_w in wIdx[0]:  
+                    graph.add_edge(i, i_w)
+
+            cliques = nx.algorithms.find_cliques(graph)
+            _clique = max_clique(graph)
+            clique_len = len(_clique)
+            dist_thrs *= 2
+        
+        idxs = list(_clique)    
+        return idxs, dist_thrs
     
     def get_features(self, c_img, n_img):
         feature_params = dict(maxCorners=150,
