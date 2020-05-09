@@ -277,17 +277,17 @@ class VisualOdometry():
         
     def get_next_pose(self, local_transform, c_pose):
         n_pose = np.eye(4)
-        n_pose[:3,:3] = local_transform[:3,:3] @ c_pose[:3,:3]
-        n_pose[:3,3] = c_pose[:3,3] + c_pose[:3,:3] @ local_transform[:3,3] 
+        n_pose[:3,:3] = c_pose[:3,:3] @ local_transform[:3,:3] 
+        n_pose[:,3] = c_pose @ local_transform[:,3]
         return n_pose
 
-    def _get_next_pose(self, local_transform, c_pose):
-        n_pose = np.eye(4)
-        quat_t = quat.from_rotation_matrix(local_transform[:3,:3])
-        quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
-        n_pose[:3, :3] = quat.as_rotation_matrix(quat_c * quat_t)
-        n_pose[:, 3] = c_pose @ local_transform[:,3]
-        return n_pose
+#     def _get_next_pose(self, local_transform, c_pose):
+#         n_pose = np.eye(4)
+#         quat_t = quat.from_rotation_matrix(local_transform[:3,:3])
+#         quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
+#         n_pose[:3,:3] = quat.as_rotation_matrix(quat_c * quat_t)
+#         n_pose[:,3] = c_pose @ local_transform[:,3]
+#         return n_pose
     
     def reproject_3d_to_2d(self, pnts3d, P):
         # shape = [n_points x 3]
