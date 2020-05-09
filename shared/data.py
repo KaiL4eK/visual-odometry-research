@@ -136,6 +136,26 @@ class KITTIData(object):
         gt_trans = local_dtrans[:3].astype(np.float32)
         return gt_quat_t_ar, gt_trans
     
+    def _get_transform_mtrx(self, idx):
+        c_idx = idx
+        n_idx = idx+1
+        
+        c_pose = self.poses[c_idx]
+        n_pose = self.poses[n_idx]
+
+        local_dtrans = np.linalg.inv(c_pose) @ n_pose[:, 3]
+
+        quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
+        quat_n = quat.from_rotation_matrix(n_pose[:3,:3])
+        quat_t = quat_c.inverse() * quat_n
+        
+        transform = np.eye(4)
+        
+        transform[:3, :3] = quat.as_rotation_matrix(quat_t)
+        transform[:3, 3] = local_dtrans[:3]
+
+        return transform
+    
     def _intrinsics_dict(self, mtrx):
         return {
             'cx': mtrx[0,2],
@@ -144,28 +164,42 @@ class KITTIData(object):
             'fy': mtrx[1,1]
         }
     
-    def get_color_P_matrix(self):
+    def get_color_С_matrix(self):
         return self.intricsics['K_cam2'], self.intricsics['K_cam3']
+    
+    def get_color_P_matrix(self):
+        return self.projections['P2'], self.projections['P3']
     
     def get_color_intrinsics_dicts(self):
         left = self._intrinsics_dict(self.intricsics['K_cam2'])
         right = self._intrinsics_dict(self.intricsics['K_cam3'])
         return left, right
-    
+        
     def get_color_left_Q_matrix(self):
         # Left
         intr = self._intrinsics_dict(self.intricsics['K_cam2'])
-        baseline = self.baselines['rgb']
+        # NOTE - Negative baseline, projecting right to left
+        baseline = -self.baselines['rgb']
         
         Q = np.array([
             [1, 0, 0, -intr['cx']],
             [0, 1, 0, -intr['cy']],
-            [0, 0, 0, -intr['fx']],
+            [0, 0, 0, intr['fx']],
             [0, 0, -1/baseline, 0]
         ])
         
         return Q
 
+    def get_color_images(self, idx):
+        fname = self._get_image_fname(idx)
+        left_img_fpath = os.path.join(self.LEFT_IMAGES_DIR, fname)
+        right_img_fpath = os.path.join(self.RIGHT_IMAGES_DIR, fname)
+        l_img = cv2.imread(left_img_fpath)
+        l_img = cv2.cvtColor(l_img, cv2.COLOR_BGR2RGB)
+        r_img = cv2.imread(right_img_fpath)
+        r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
+        return l_img, r_img
+    
     def get_color_images(self, idx):
         fname = self._get_image_fname(idx)
         left_img_fpath = os.path.join(self.LEFT_IMAGES_DIR, fname)
@@ -215,6 +249,37 @@ class VisualOdometry():
             speckleRange=8
         )
     
+    def reproject_3d_to_2d(self, pnts3d, P):
+        # shape = [n_points x 3]
+        # pnts3d_hmgns - Homogenous representation
+        pnts3d_hmgns = np.ones((pnts3d.shape[0], pnts3d.shape[1]+1))
+        pnts3d_hmgns[:,:3] = pnts3d
+        
+        pnts2d = P @ np.transpose(pnts3d_hmgns)
+        pnts2d = np.transpose(pnts2d)
+        pnts2d /= pnts2d[:,2:3] # To keep array
+        pnts2d = pnts2d[:,:2].astype(int)
+        return pnts2d
+    
+    def reproject_2d_to_3d_points(self, feats, depth_frame):
+        points = []
+        for ft in feats:
+            pnt = depth_frame[ft[1], ft[0]]
+            points.append(pnt)
+
+        points = np.array(points)    
+        ft_idxs = (points[:,2] > 0)
+
+        # All points, valid idxs
+        return points, ft_idxs
+    
+    def transform_3d(self, T, pnts3d):
+        pnts3d_hmgns = np.ones((pnts3d.shape[0], pnts3d.shape[1]+1))
+        pnts3d_hmgns[:,:3] = pnts3d
+        pred_pnts_3d = T @ pnts3d_hmgns.transpose()
+        pred_pnts_3d = pred_pnts_3d.transpose()[:,:3]
+        return pred_pnts_3d
+    
     def process_depth(self, l_img, r_img, Q):
         l_img_gray = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
         r_img_gray = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
@@ -237,13 +302,19 @@ class VisualOdometry():
         c_img_gray = cv2.cvtColor(c_img, cv2.COLOR_RGB2GRAY)
         n_img_gray = cv2.cvtColor(n_img, cv2.COLOR_RGB2GRAY)
 
-        c_feat_corners = cv2.goodFeaturesToTrack(c_img_gray, mask=None, **feature_params)
-        n_feat_corners, st, err = cv2.calcOpticalFlowPyrLK(c_img_gray, n_img_gray, c_feat_corners, None, **lk_params)
+        c_feats = cv2.goodFeaturesToTrack(c_img_gray, mask=None, **feature_params)
+        n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img_gray, n_img_gray, c_feats, None, **lk_params)
+        
+        c_x_idxs = (c_feats[:,:,0] > 0) & (c_feats[:,:,0] < c_img.shape[1])
+        c_y_idxs = (c_feats[:,:,1] > 0) & (c_feats[:,:,1] < c_img.shape[0])
+        n_x_idxs = (n_feats[:,:,0] > 0) & (n_feats[:,:,0] < n_img.shape[1])
+        n_y_idxs = (n_feats[:,:,1] > 0) & (n_feats[:,:,1] < n_img.shape[0])
+        idxs = st==1 & c_x_idxs & c_y_idxs & n_x_idxs & n_y_idxs
+        
+        c_feats = c_feats[idxs]
+        n_feats = n_feats[idxs]
 
-        c_feat_corners = c_feat_corners[st==1]
-        n_feat_corners = n_feat_corners[st==1]
-
-        return c_feat_corners.astype(int), n_feat_corners.astype(int)
+        return c_feats.astype(int), n_feats.astype(int)
     
     
 def draw_matches(img1, kp1, img2, kp2, matches, color=None): 
