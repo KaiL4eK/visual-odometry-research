@@ -261,20 +261,27 @@ from scipy.optimize import least_squares
     
 class VisualOdometry():
     def __init__(self):
+        block = 9
         self.left_matcher = cv2.StereoSGBM_create(
             minDisparity=0,
-            numDisparities=16*9, 
-            blockSize=15,
-            P1=0,
-            P2=0,
-            disp12MaxDiff=1,
-        #     preFilterCap=1,
+            numDisparities=16*5, 
+            blockSize=block,
+#             P1=block*block*8,
+#             P2=block*block*32,
+#             disp12MaxDiff=1,
+            preFilterCap=1,
             uniquenessRatio=5,
             speckleWindowSize=200,
             speckleRange=8
         )
-
+        
     def get_next_pose(self, local_transform, c_pose):
+        n_pose = np.eye(4)
+        n_pose[:3,:3] = local_transform[:3,:3] @ c_pose[:3,:3]
+        n_pose[:3,3] = c_pose[:3,3] + c_pose[:3,:3] @ local_transform[:3,3] 
+        return n_pose
+
+    def _get_next_pose(self, local_transform, c_pose):
         n_pose = np.eye(4)
         quat_t = quat.from_rotation_matrix(local_transform[:3,:3])
         quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
@@ -299,7 +306,7 @@ class VisualOdometry():
         
         return pnts2d
     
-    def reproject_2d_to_3d_points(self, feats, depth_frame):
+    def reproject_2d_to_3d_points(self, feats, depth_frame, min_z=1, max_z=100):
         points = []
         feats = np.around(feats).astype(int)
         for ft in feats:
@@ -307,7 +314,7 @@ class VisualOdometry():
             points.append(pnt)
 
         points = np.array(points)    
-        ft_idxs = (points[:,2] > 0) & np.any(np.isfinite(points), axis=1)
+        ft_idxs = (points[:,2] > min_z) & (points[:,2] < max_z) & np.any(np.isfinite(points), axis=1)
 
         # All points, valid idxs
         return points, ft_idxs
@@ -330,7 +337,7 @@ class VisualOdometry():
         depth_frame = cv2.reprojectImageTo3D(disp, Q)
         return depth_frame
     
-    def max_clique_filter(self, c_pnts, n_pnts, dist_thrs=0.05, min_points=6):
+    def max_clique_filter(self, c_pnts, n_pnts, dist_thrs=0.1, min_points=6):
         num_points = c_pnts.shape[0]
         graph = nx.Graph()
         graph.add_nodes_from(list(range(num_points)))
@@ -418,8 +425,8 @@ class VisualOdometry():
         c_feats = np.array(c_feats)
         
         lk_params = dict(winSize=(15, 15),
-                         maxLevel=2,
-                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+                         maxLevel=3,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.03))
 
         n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img, n_img, c_feats, None, **lk_params)
         n_feats[:,0] = np.clip(n_feats[:,0], 0, img_sz[1]-1)
