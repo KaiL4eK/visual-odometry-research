@@ -131,9 +131,10 @@ class KITTIData(object):
         
         c_pose = self.poses[c_idx]
         n_pose = self.poses[n_idx]
-
+        
         local_dtrans = np.linalg.inv(c_pose) @ n_pose[:, 3]
-
+        
+        # TODO - remove quaternions for manual methods
         quat_c = quat.from_rotation_matrix(c_pose[:3,:3])
         quat_n = quat.from_rotation_matrix(n_pose[:3,:3])
         quat_t = quat_c.inverse() * quat_n
@@ -179,6 +180,12 @@ class KITTIData(object):
             'fy': mtrx[1,1]
         }
     
+    def get_P_matrix(self, color=False):
+        if color:
+            return self.projections['P2'], self.projections['P3']
+        else:
+            return self.projections['P0'], self.projections['P1']
+
     def get_С_matrix(self, color=False):
         if color:
             return self.intricsics['K_cam2'], self.intricsics['K_cam3']
@@ -261,18 +268,33 @@ from scipy.optimize import least_squares
     
 class VisualOdometry():
     def __init__(self):
-        block = 9
+#         block_sz = 11
+#         self.left_matcher = cv2.StereoSGBM_create(
+#             minDisparity=0,
+#             numDisparities=16*6, 
+#             blockSize=block_sz,
+#             P1=block_sz*block_sz*8*1,
+#             P2=block_sz*block_sz*32*1,
+#             disp12MaxDiff=1,
+#         #     preFilterCap=1,
+#             uniquenessRatio=10,
+#             speckleWindowSize=100,
+#             speckleRange=1
+#         )
+        
+        block_sz = 3
         self.left_matcher = cv2.StereoSGBM_create(
             minDisparity=0,
-            numDisparities=16*5, 
-            blockSize=block,
-#             P1=block*block*8,
-#             P2=block*block*32,
-#             disp12MaxDiff=1,
-            preFilterCap=1,
-            uniquenessRatio=5,
-            speckleWindowSize=200,
-            speckleRange=8
+            numDisparities=16*10,
+            blockSize=block_sz,
+            P1=block_sz*block_sz*8*3,
+            P2=block_sz*block_sz*32*3,
+#             disp12MaxDiff=0,
+            preFilterCap=63,
+            uniquenessRatio=10,
+            speckleWindowSize=100,
+            speckleRange=1,
+#             mode=cv2.StereoSGBM_MODE_SGBM_3WAY
         )
         
     def get_next_pose(self, local_transform, c_pose):
@@ -306,7 +328,7 @@ class VisualOdometry():
         
         return pnts2d
     
-    def reproject_2d_to_3d_points(self, feats, depth_frame, min_z=1, max_z=100):
+    def reproject_2d_to_3d_points(self, feats, depth_frame, min_z=1, max_z=70):
         points = []
         feats = np.around(feats).astype(int)
         for ft in feats:
@@ -337,7 +359,7 @@ class VisualOdometry():
         depth_frame = cv2.reprojectImageTo3D(disp, Q)
         return depth_frame
     
-    def max_clique_filter(self, c_pnts, n_pnts, dist_thrs=0.1, min_points=6):
+    def max_clique_filter(self, c_pnts, n_pnts, dist_thrs=0.2, min_points=6):
         num_points = c_pnts.shape[0]
         graph = nx.Graph()
         graph.add_nodes_from(list(range(num_points)))
@@ -371,7 +393,9 @@ class VisualOdometry():
         if len(feats) == 0:
             return None
         
-        feats = [f.pt for f in feats]
+        feats = sorted(feats, key=lambda x: -x.response)
+        # Get best 10 features
+        feats = [f.pt for f in feats[:10]]
         feats = np.array(feats)
         
         x_idxs = (feats[:,0] > 0) & (feats[:,0] < img.shape[1])
@@ -397,10 +421,160 @@ class VisualOdometry():
         
         feats = feats[idxs].astype(np.float32)
         return feats
+
+    def get_stereo_features(self, l_img, r_img):
+        orb = cv2.ORB_create()
+
+        FLANN_INDEX_KDTREE = 1
+        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+        search_params = dict(checks=50)
+        flann = cv2.FlannBasedMatcher(index_params,search_params)
+
+        if len(l_img.shape) == 3 and l_img.shape[2] > 1:
+            l_img = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
+            r_img = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
+
+        l_kp, l_des = orb.detectAndCompute(l_img, None)
+        r_kp, r_des = orb.detectAndCompute(r_img, None)
+
+        matches = flann.knnMatch(l_des, r_des, k=2)
+
+    @staticmethod
+    def get_3d_points(l_points, r_points, PL, PR):
+        numPoints = l_points.shape[0]
+        d3dPoints = np.ones((numPoints,3))
+
+        for i in range(numPoints):
+            pLeft = l_points[i,:]
+            pRight = r_points[i,:]
+
+            X = np.zeros((4,4))
+            X[0,:] = pLeft[0] * PL[2,:] - PL[0,:]
+            X[1,:] = pLeft[1] * PL[2,:] - PL[1,:]
+            X[2,:] = pRight[0] * PR[2,:] - PR[0,:]
+            X[3,:] = pRight[1] * PR[2,:] - PR[1,:]
+
+            _, _, v = np.linalg.svd(X)
+            v = v.transpose()
+            vSmall = v[:,-1]
+            vSmall /= vSmall[-1]
+
+            d3dPoints[i, :] = vSmall[0:-1]
+
+        return d3dPoints
+
+    def get_disparity_features(self, l_img, r_img, l_feats=None, lk_err=20, y_err=2):
+        img_sz = l_img.shape[:2]
+        tile_sz = np.array([50, 100])
         
-    def get_features(self, c_img, n_img):
+        rate_sz = img_sz // tile_sz
+        
+        offset = (img_sz - rate_sz * tile_sz)/2
+        offset = offset.astype(int)
+       
+        if len(l_img.shape) == 3 and l_img.shape[2] > 1:
+            l_img = cv2.cvtColor(l_img, cv2.COLOR_RGB2GRAY)
+            r_img = cv2.cvtColor(r_img, cv2.COLOR_RGB2GRAY)
+        
+        if l_feats is None:
+            l_feats = []
+            for y in range(offset[0], img_sz[0], tile_sz[0]):
+                for x in range(offset[1], img_sz[1], tile_sz[1]):
+    #                 feats = self._get_features_harris(l_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                    feats = self._get_features_FAST(l_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                    if feats is None:
+                        continue
+                    
+                    feats += np.array([x, y])
+                    l_feats.extend([f for f in feats])
+        
+        l_feats = np.array(l_feats)
+        
+        lk_params = dict(winSize=(15, 15),
+                         maxLevel=3,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.03))
+
+        r_feats, st, err = cv2.calcOpticalFlowPyrLK(l_img, r_img, l_feats, None, flags=cv2.MOTION_AFFINE, **lk_params)
+        
+        f_err = np.abs(r_feats-l_feats)
+
+        idxs = (st==1).flatten() & (np.abs(err) < lk_err).flatten() & (f_err[:,1] < y_err)
+        l_feats = l_feats[idxs]
+        r_feats = r_feats[idxs]
+        
+        r_feats[:,0] = np.clip(r_feats[:,0], 0, img_sz[1]-1)
+        r_feats[:,1] = np.clip(r_feats[:,1], 0, img_sz[0]-1)
+        
+        return l_feats.astype(np.float32), r_feats.astype(np.float32)
+
+    # Three pass LKT search
+    def get_circular_features(self, cl_img, cr_img, nl_img, nr_img, cl_feats=None, lk_err=20, y_err=2, temp_r=100):
+        img_sz = cl_img.shape[:2]
+        tile_sz = np.array([50, 100])
+        
+        rate_sz = img_sz // tile_sz
+        
+        offset = (img_sz - rate_sz * tile_sz)/2
+        offset = offset.astype(int)
+       
+        if len(cl_img.shape) == 3 and cl_img.shape[2] > 1:
+            cl_img = cv2.cvtColor(cl_img, cv2.COLOR_RGB2GRAY)
+            cr_img = cv2.cvtColor(cr_img, cv2.COLOR_RGB2GRAY)
+            nl_img = cv2.cvtColor(nl_img, cv2.COLOR_RGB2GRAY)
+            nr_img = cv2.cvtColor(nr_img, cv2.COLOR_RGB2GRAY)
+        
+        if cl_feats is None:
+            cl_feats = []
+            for y in range(offset[0], img_sz[0], tile_sz[0]):
+                for x in range(offset[1], img_sz[1], tile_sz[1]):
+    #                 feats = self._get_features_harris(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                    feats = self._get_features_FAST(cl_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                    if feats is None:
+                        continue
+                    
+                    feats += np.array([x, y])
+                    cl_feats.extend([f for f in feats])
+            
+        cl_feats = np.array(cl_feats)
+        
+        lk_params = dict(winSize=(15, 15),
+                         maxLevel=3,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.03))
+
+        # Current disparity search
+        cr_feats, c_disp_st, c_disp_err = cv2.calcOpticalFlowPyrLK(cl_img, cr_img, cl_feats, None, flags=cv2.MOTION_AFFINE, **lk_params)
+        # Temporal search
+        nl_feats, temp_st, temp_err = cv2.calcOpticalFlowPyrLK(cl_img, nl_img, cl_feats, None, flags=cv2.MOTION_AFFINE, **lk_params)
+        # Next disparity search
+        nr_feats, n_disp_st, n_disp_err = cv2.calcOpticalFlowPyrLK(nl_img, nr_img, nl_feats, None, flags=cv2.MOTION_AFFINE, **lk_params)
+        
+
+        c_disp_vec_err = np.abs(cr_feats-cl_feats)
+        n_disp_vec_err = np.abs(nr_feats-nl_feats)
+        temp_vec_err = np.abs(cl_feats-nl_feats)
+
+        global_idxs = (c_disp_st==1) & (temp_st==1) & (n_disp_st==1)
+        err_idxs = (np.abs(c_disp_err) < lk_err) & (np.abs(temp_err) < lk_err) & (np.abs(n_disp_err) < lk_err)
+        coord_err_idxs = (c_disp_vec_err[:,1] < y_err) & (n_disp_vec_err[:,1] < y_err)
+
+        global_idxs = global_idxs.flatten()
+        err_idxs = err_idxs.flatten()
+        coord_err_idxs = coord_err_idxs.flatten()
+
+        idxs = global_idxs & err_idxs & coord_err_idxs
+        # n_feats[:,0] = np.clip(n_feats[:,0], 0, img_sz[1]-1)
+        # n_feats[:,1] = np.clip(n_feats[:,1], 0, img_sz[0]-1)
+        
+        cl_feats = cl_feats[idxs].astype(np.float32)
+        cr_feats = cr_feats[idxs].astype(np.float32)
+        nl_feats = nl_feats[idxs].astype(np.float32)
+        nr_feats = nr_feats[idxs].astype(np.float32)
+
+        return cl_feats, cr_feats, nl_feats, nr_feats
+
+    def get_features(self, c_img, n_img, lk_err=20):
         img_sz = c_img.shape[:2]
-        tile_sz = np.array([100, 100])
+        tile_sz = np.array([50, 100])
         
         rate_sz = img_sz // tile_sz
         
@@ -414,8 +588,8 @@ class VisualOdometry():
         c_feats = []
         for y in range(offset[0], img_sz[0], tile_sz[0]):
             for x in range(offset[1], img_sz[1], tile_sz[1]):
-                feats = self._get_features_harris(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
-#                 feats = self._get_features_FAST(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+#                 feats = self._get_features_harris(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
+                feats = self._get_features_FAST(c_img[y:y+tile_sz[0], x:x+tile_sz[1]])
                 if feats is None:
                     continue
                 
@@ -428,14 +602,18 @@ class VisualOdometry():
                          maxLevel=3,
                          criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.03))
 
-        n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img, n_img, c_feats, None, **lk_params)
+        n_feats, st, err = cv2.calcOpticalFlowPyrLK(c_img, n_img, c_feats, None, flags=cv2.MOTION_AFFINE, **lk_params)
+        
+        n_feats = np.around(n_feats)
+        c_feats = np.around(c_feats)
+
+        idxs = (st==1).flatten() & (np.abs(err) < lk_err).flatten()
+        c_feats = c_feats[idxs]
+        n_feats = n_feats[idxs]
+        
         n_feats[:,0] = np.clip(n_feats[:,0], 0, img_sz[1]-1)
         n_feats[:,1] = np.clip(n_feats[:,1], 0, img_sz[0]-1)
         
-        idxs = (st==1).flatten()
-        c_feats = c_feats[idxs]
-        n_feats = n_feats[idxs]
-
         return c_feats.astype(np.float32), n_feats.astype(np.float32)
     
     def rot_transform_matrix(x):
@@ -444,26 +622,58 @@ class VisualOdometry():
         transform[:3, 3] = x[3:]
         return transform
     
-    def _get_transform_PnP(self, c_pnts3d, n_pnts3d, C_mat):
-        c_pnts2d, _ = cv2.projectPoints(c_pnts3d, np.zeros(3), np.zeros(3), C_mat, distCoeffs=None)
-        retval, rvec, tvec = cv2.solvePnP(n_pnts3d, c_pnts2d, cameraMatrix=C_mat, distCoeffs=None, flags=cv2.SOLVEPNP_ITERATIVE)
-        
+    def _get_transform(self, rvec, tvec):
         transform = np.eye(4)
         transform[:3,:3] = cv2.Rodrigues(rvec)[0]
         transform[:3, 3] = tvec[:,0]
         return transform
-    
-    def _get_transform_PnPRansac(self, c_pnts3d, n_pnts3d, C_mat):
-        c_pnts2d, _ = cv2.projectPoints(c_pnts3d, np.zeros(3), np.zeros(3), C_mat, distCoeffs=None)
-        retval, rvec, tvec, inliers = cv2.solvePnPRansac(n_pnts3d, c_pnts2d, cameraMatrix=C_mat, distCoeffs=None)
+
+    def _get_transform_PnP(self, c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat):
+#         c_pnts2d, _ = cv2.projectPoints(c_pnts3d, np.zeros(3), np.zeros(3), C_mat, distCoeffs=None)
+        retval, rvec, tvec = cv2.solvePnP(
+            n_pnts3d, 
+            c_pnts2d, 
+            cameraMatrix=C_mat, 
+            distCoeffs=None, 
+            flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        return self._get_transform(rvec, tvec)
+
+    def _get_transform_PnPRansac(self, c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat, solver_data):
+        if solver_data is not None:
+            tvec = solver_data.get('tvec')
+        else:
+            tvec = None
+            
+        iter_count = 100
+        reproj_err = 8
+        while iter_count < 10000:
+            retval, rvec, tvec, inliers = cv2.solvePnPRansac(
+                n_pnts3d, 
+                c_pnts2d, 
+                cameraMatrix=C_mat, 
+                distCoeffs=None,
+                reprojectionError=reproj_err,
+                iterationsCount=iter_count,
+                useExtrinsicGuess=(tvec is not None),
+                tvec=tvec
+            )
+            if retval:
+                break
+            # Increase limits
+            iter_count *= 2
+            reproj_err *= np.sqrt(2)
+        
+        if not retval:
+            return None
+        
         # Inliers - indices
-        
-        transform = np.eye(4)
-        transform[:3,:3] = cv2.Rodrigues(rvec)[0]
-        transform[:3, 3] = tvec[:,0]
-        return transform
-        
-    def _get_transform_LM(self, c_pnts3d, n_pnts3d, C_mat):
+        if solver_data is not None:
+            solver_data['inliers'] = inliers
+
+        return self._get_transform(rvec, tvec)
+
+    def _get_transform_LM(self, c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat, solver_data):
         initial = np.zeros(6)
         args = (
             c_pnts_3d,
@@ -477,13 +687,13 @@ class VisualOdometry():
         transform[:3, 3] = x[3:]
         return transform
 
-    def get_transform(self, c_pnts3d, n_pnts3d, C_mat, type_='PnP'):
+    def get_transform(self, c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat, type_='PnP', solver_data=None):
         types = {
             'PnP': self._get_transform_PnP,
             'PnPRansac': self._get_transform_PnPRansac
         }
-        return types[type_](c_pnts3d, n_pnts3d, C_mat)
-        
+        return types[type_](c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat, solver_data=solver_data)
+
     @staticmethod
     def estimate_transform_2d(x, c_pnts_2d, n_pnts_2d, c_pnts_3d, n_pnts_3d, P_mtrx):
         """
@@ -520,7 +730,7 @@ class VisualOdometry():
         return residual.flatten()
     
     
-def draw_matches(img1, kp1, img2, kp2, matches, color=None): 
+def draw_matches(img1, kp1, img2, kp2, matches, color=None, radius=10): 
     """Draws lines between matching keypoints of two images.  
     Keypoints not in a matching pair are not drawn.
     Places the images side by side in a new image and draws circles 
@@ -544,13 +754,13 @@ def draw_matches(img1, kp1, img2, kp2, matches, color=None):
         new_shape = (img1.shape[0]+img2.shape[0], max(img1.shape[1], img2.shape[1]), img1.shape[2])
     elif len(img1.shape) == 2:
         new_shape = (img1.shape[0]+img2.shape[0], max(img1.shape[1], img2.shape[1]))
-    new_img = np.zeros(new_shape, type(img1.flat[0]))  
+    new_img = np.zeros(new_shape, type(img1.flat[0]))
     # Place images onto the new image.
     new_img[0:img1.shape[0],0:img1.shape[1]] = img1
     new_img[img1.shape[0]:img1.shape[0]+img2.shape[0],0:img2.shape[1]] = img2
     
     # Draw lines between matches.  Make sure to offset kp coords in second image appropriately.
-    r = 10
+    r = radius
     thickness = 2
     if color:
         c = color
