@@ -125,10 +125,7 @@ class KITTIData(object):
     def __len__(self):
         return len(self.poses)-1
 
-    def _get_transform(self, idx):
-        c_idx = idx
-        n_idx = idx+1
-        
+    def _get_transform(self, c_idx, n_idx):
         c_pose = self.poses[c_idx]
         n_pose = self.poses[n_idx]
         
@@ -439,8 +436,7 @@ class VisualOdometry():
 
         matches = flann.knnMatch(l_des, r_des, k=2)
 
-    @staticmethod
-    def get_3d_points(l_points, r_points, PL, PR):
+    def get_3d_points(self, l_points, r_points, PL, PR):
         numPoints = l_points.shape[0]
         d3dPoints = np.ones((numPoints,3))
 
@@ -537,7 +533,7 @@ class VisualOdometry():
             
         cl_feats = np.array(cl_feats)
         
-        lk_params = dict(winSize=(15, 15),
+        lk_params = dict(winSize=(21, 21),
                          maxLevel=3,
                          criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.03))
 
@@ -555,7 +551,7 @@ class VisualOdometry():
 
         global_idxs = (c_disp_st==1) & (temp_st==1) & (n_disp_st==1)
         err_idxs = (np.abs(c_disp_err) < lk_err) & (np.abs(temp_err) < lk_err) & (np.abs(n_disp_err) < lk_err)
-        coord_err_idxs = (c_disp_vec_err[:,1] < y_err) & (n_disp_vec_err[:,1] < y_err)
+        coord_err_idxs = (c_disp_vec_err[:,1] < y_err) & (n_disp_vec_err[:,1] < y_err) & (np.linalg.norm(temp_vec_err, axis=1) < 100)
 
         global_idxs = global_idxs.flatten()
         err_idxs = err_idxs.flatten()
@@ -646,7 +642,7 @@ class VisualOdometry():
             tvec = None
             
         iter_count = 100
-        reproj_err = 8
+        reproj_err = 1
         while iter_count < 10000:
             retval, rvec, tvec, inliers = cv2.solvePnPRansac(
                 n_pnts3d, 
