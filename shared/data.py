@@ -690,6 +690,16 @@ class VisualOdometry():
         }
         return types[type_](c_pnts2d, n_pnts2d, c_pnts3d, n_pnts3d, C_mat, solver_data=solver_data)
 
+    def get_relative_transform(self, c_pnts2d, n_pnts2d, C_mat, type_='PnP', solver_data=None):
+        E, mask = cv2.findEssentialMat(c_pnts2d, n_pnts2d, cameraMatrix=C_mat, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+        _, Rot, t, _ = cv2.recoverPose(E, c_pnts2d, n_pnts2d, cameraMatrix=C_mat)
+
+        transform = np.eye(4)
+        transform[:3,:3] = Rot
+        transform[:3, 3] = t[:,0]
+        return transform, mask[:,0]
+
+
     @staticmethod
     def estimate_transform_2d(x, c_pnts_2d, n_pnts_2d, c_pnts_3d, n_pnts_3d, P_mtrx):
         """
