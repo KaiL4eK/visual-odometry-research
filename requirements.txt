@@ -1,5 +1,5 @@
-opencv-contrib-python-headless==4.2.0.34
-opencv-python-headless==4.2.0.34
+opencv-contrib-python==4.2.0.34
+opencv-python==4.2.0.34
 pytransform3d==1.1.1
 pprint==0.1
 torch==1.4.0
