@@ -535,6 +535,7 @@ class VisualOdometry():
     def get_circular_features_akaze(self, cl_img, cr_img, nl_img, nr_img, cl_feats=None, y_err=1):
         img_sz = cl_img.shape[:2]
         ftr_det = cv2.AKAZE_create()
+        # ftr_det = cv2.BRISK_create()
         matcher = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_BRUTEFORCE_HAMMING)
 
         if len(cl_img.shape) == 3 and cl_img.shape[2] > 1:

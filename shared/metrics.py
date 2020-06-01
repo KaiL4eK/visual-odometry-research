@@ -21,11 +21,11 @@ def compute_ATE(gt, pred):
         gt = np.array(gt)
     if isinstance(pred,list):
         pred = np.array(pred)
-    
+
     errs = gt[:, :3, 3] - pred[:, :3, 3]
     magns = np.linalg.norm(errs, axis=1)
     # TODO - sqrt and **2 required??
-    ate = np.sqrt(np.mean(magns ** 2)) 
+    ate = np.sqrt(np.mean(magns**2))
     return ate
 
 
@@ -34,7 +34,7 @@ def compute_RPE(gt, pred):
         gt = np.array(gt)
     if isinstance(pred,list):
         pred = np.array(pred)
-    
+
     trans_errors = []
     rot_errors = []
     for i in range(len(gt))[:-1]:
@@ -45,7 +45,7 @@ def compute_RPE(gt, pred):
         pred1 = pred[i]
         pred2 = pred[i+1]
         pred_rel = np.linalg.inv(pred1) @ pred2
-        
+
         rel_err = np.linalg.inv(gt_rel) @ pred_rel
 
         trans_errors.append(translation_error(rel_err))
@@ -74,7 +74,7 @@ def calc_sequence_errors(poses_gt, poses_result):
     dists = trajectory_distances(poses_gt)
     step_size = 10
     lengths = [100, 200, 300, 400, 500, 600, 700, 800]
-    
+
     for first_frame_idx in range(0, len(poses_gt), step_size):
         for len_ in lengths:
             last_frame_idx = last_frame_from_segment_length(
@@ -112,7 +112,7 @@ def calc_sequence_errors(poses_gt, poses_result):
 def compute_segment_error(seq_errs):
     avg_segment_errs = {}
     lengths = np.unique(seq_errs[:,3])
-        
+
     for len_ in lengths:
         data = seq_errs[seq_errs[:,3] == len_]
         avg = np.mean(data[:, 1:3], axis=0)
@@ -126,4 +126,3 @@ def compute_overall_err(seq_errs):
         return np.mean(seq_errs[:, 1:3], axis=0)
     else:
         return 0, 0
-    

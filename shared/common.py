@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 
 def plot_trajectories(poses_gt, poses_result):
     plot_keys = ["Ground Truth", "Ours"]
-    fontsize_ = 15
+    fontsize_ = 12
 
     poses_dict = {}
     poses_dict["Ground Truth"] = poses_gt
@@ -33,7 +33,7 @@ def plot_trajectories(poses_gt, poses_result):
     
     
 def plot_trajectory(poses):
-    fontsize_ = 15
+    fontsize_ = 12
 
 #     fig = plt.figure()
 #     ax = plt.gca()
